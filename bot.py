@@ -202,6 +202,21 @@ async def send_excel(target, context: ContextTypes.DEFAULT_TYPE):
     else:
         await context.bot.send_message(chat.id, "Шаблон временно недоступен — загляни в шапку профиля @iriskashe.")
 
+    # Универсальная карманная версия — работает на любом телефоне без приложений
+    await context.bot.send_message(
+        chat.id,
+        "📝 *Нет Excel или Таблиц под рукой?* Лови карманную версию — "
+        "скопируй в Заметки и заполняй прямо там:\n\n"
+        "🩷 Карманный бюджет\n"
+        "Доход: \n"
+        "Обязательные расходы: \n"
+        "Переменные расходы: \n"
+        "Откладываю (10–30%): \n"
+        "Цель подушки: \n"
+        "Осталось накопить: ",
+        parse_mode="Markdown",
+    )
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Окей, остановились. Напиши /start, когда захочешь продолжить.")
