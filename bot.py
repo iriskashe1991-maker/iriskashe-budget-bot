@@ -30,6 +30,9 @@ EXCEL_PATH = os.path.join(os.path.dirname(__file__), "Бюджет_шаблон.
 # Ссылка на шаблон в Google Таблицах (удобно для телефонов). Если задана —
 # бот пришлёт ссылку «сделать копию» вместе с файлом.
 GSHEET_LINK = os.environ.get("GSHEET_LINK", "")
+# Годовой бюджет (12 вкладок-месяцев + сводка года)
+YEAR_EXCEL_PATH = os.path.join(os.path.dirname(__file__), "Бюджет_год.xlsx")
+GSHEET_YEAR_LINK = os.environ.get("GSHEET_YEAR_LINK", "")
 
 # GigaChat (ИИ «Ворчливый финдир»). GIGACHAT_KEY — Authorization key из кабинета GigaChat.
 GIGACHAT_KEY = os.environ.get("GIGACHAT_KEY", "")
@@ -121,7 +124,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Посчитать мой бюджет", callback_data="calc")],
         [InlineKeyboardButton("🔍 Куда утекли деньги", callback_data="leaks")],
-        [InlineKeyboardButton("📥 Получить Excel-шаблон", callback_data="excel")],
+        [InlineKeyboardButton("📥 Получить шаблон на месяц", callback_data="excel")],
+        [InlineKeyboardButton("📅 Годовой бюджет (12 мес)", callback_data="year")],
     ])
     await update.message.reply_text(
         "Привет! Я финансовый бот Иришки 🤩\n\n"
@@ -137,6 +141,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if query.data == "excel":
         await send_excel(query, context)
+        return ConversationHandler.END
+    if query.data == "year":
+        await send_year(query, context)
         return ConversationHandler.END
     if query.data == "calc":
         await query.message.reply_text(
@@ -283,6 +290,26 @@ async def get_leaks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def send_year(target, context: ContextTypes.DEFAULT_TYPE):
+    chat = target.message.chat if hasattr(target, "message") else target.effective_chat
+    if GSHEET_YEAR_LINK:
+        await context.bot.send_message(
+            chat.id,
+            "📅 Годовой бюджет в Google Таблицах — нажми «Создать копию» и веди прямо там:\n"
+            f"{GSHEET_YEAR_LINK}",
+        )
+    if os.path.exists(YEAR_EXCEL_PATH):
+        with open(YEAR_EXCEL_PATH, "rb") as f:
+            await context.bot.send_document(
+                chat_id=chat.id, document=f,
+                filename="Бюджет_год.xlsx",
+                caption="Годовой бюджет 🩷 Вкладка на каждый месяц + сводка за год с графиком. "
+                        "Удобнее вести на компьютере или в Google Таблицах.",
+            )
+    else:
+        await context.bot.send_message(chat.id, "Файл временно недоступен — загляни в шапку профиля @iriskashe.")
+
+
 async def send_excel(target, context: ContextTypes.DEFAULT_TYPE):
     chat = target.message.chat if hasattr(target, "message") else target.effective_chat
     if GSHEET_LINK:
@@ -328,7 +355,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(on_button, pattern="^(calc|excel|leaks)$")],
+        entry_points=[CallbackQueryHandler(on_button, pattern="^(calc|excel|leaks|year)$")],
         states={
             INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_income)],
             OBLIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_oblig)],
