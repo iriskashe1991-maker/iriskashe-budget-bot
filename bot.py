@@ -10,8 +10,12 @@
 
 import os
 import math
+import time
+import uuid
 import asyncio
 import logging
+
+import httpx
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -27,10 +31,72 @@ EXCEL_PATH = os.path.join(os.path.dirname(__file__), "Бюджет_шаблон.
 # бот пришлёт ссылку «сделать копию» вместе с файлом.
 GSHEET_LINK = os.environ.get("GSHEET_LINK", "")
 
+# GigaChat (ИИ «Ворчливый финдир»). GIGACHAT_KEY — Authorization key из кабинета GigaChat.
+GIGACHAT_KEY = os.environ.get("GIGACHAT_KEY", "")
+GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+
 SAVINGS_RATE = 0.20          # рекомендованный % накоплений
 DEFAULT_CUSHION_MONTHS = 6   # запас в месяцах для подушки
 
-INCOME, OBLIG, VAR, MONTHS = range(4)
+INCOME, OBLIG, VAR, MONTHS, LEAKS = range(5)
+
+GRUMPY_SYSTEM = (
+    "Ты — «Ворчливый финдир», ИИ-помощник из Telegram-бота финансового блогера "
+    "Иришки (@iriskashe). Характер: ворчишь с юмором и лёгким сарказмом, но по-доброму, "
+    "как подруга-финдир. Тебе присылают список трат. Ты: 1) считаешь общую сумму; "
+    "2) находишь 2–3 главные «дыры» — куда утекает больше всего; 3) ворчливо, но с любовью "
+    "комментируешь; 4) даёшь 1–2 конкретных совета, где и сколько реально урезать без страданий; "
+    "5) прикидываешь, сколько в месяц можно отправлять в накопления; 6) если остаются свободные "
+    "деньги — по-доброму подтолкни не держать их «под подушкой», а положить на накопительный счёт "
+    "или короткий вклад, чтобы капал процент и инфляция не съедала, и советуешь сравнить условия "
+    "в своём банке. Пиши коротко и живо, на «ты», эмодзи в меру (🩷👀😤). Без занудства и нотаций. "
+    "В конце ОБЯЗАТЕЛЬНО добавь отдельной строкой: "
+    "«Я ИИ и слегка ворчу — это не личная финансовая рекомендация 🩷». "
+    "ВАЖНО: НЕ называй конкретные банки, бренды, продукты или акции и НЕ указывай конкретные "
+    "проценты/ставки (ты их не знаешь, они меняются) — говори только общим принципом."
+)
+
+_giga = {"token": None, "exp": 0.0}
+
+
+async def _giga_token() -> str:
+    """Получаем и кэшируем access_token GigaChat (живёт ~30 мин)."""
+    if _giga["token"] and time.time() < _giga["exp"] - 60:
+        return _giga["token"]
+    async with httpx.AsyncClient(verify=False, timeout=30) as c:
+        r = await c.post(
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+            headers={
+                "Authorization": f"Basic {GIGACHAT_KEY}",
+                "RqUID": str(uuid.uuid4()),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"scope": GIGACHAT_SCOPE},
+        )
+        r.raise_for_status()
+        _giga["token"] = r.json()["access_token"]
+        _giga["exp"] = time.time() + 25 * 60
+        return _giga["token"]
+
+
+async def grumpy_analyze(text: str) -> str:
+    """Отправляем траты «Ворчливому финдиру» и получаем разбор."""
+    token = await _giga_token()
+    async with httpx.AsyncClient(verify=False, timeout=60) as c:
+        r = await c.post(
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "model": "GigaChat",
+                "messages": [
+                    {"role": "system", "content": GRUMPY_SYSTEM},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.8,
+            },
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
 
 
 def parse_money(text: str) -> float:
@@ -54,6 +120,7 @@ def rub(x: float) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Посчитать мой бюджет", callback_data="calc")],
+        [InlineKeyboardButton("🔍 Куда утекли деньги", callback_data="leaks")],
         [InlineKeyboardButton("📥 Получить Excel-шаблон", callback_data="excel")],
     ])
     await update.message.reply_text(
@@ -77,6 +144,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "(зарплата + подработки, одной суммой)\n\nНапиши, например: 120000 или 120к",
         )
         return INCOME
+    if query.data == "leaks":
+        await query.message.reply_text(
+            "Окей, неси свои траты 👀\n\nМожно списком, через запятую или просто словами, как помнишь — "
+            "я разберусь. Например:\n\n"
+            "кофе 1800\nдоставка 4200\nтакси 2600\nмаркетплейс 5300\nподписки 1400\n\n"
+            "или: «за неделю кофе тысячи 2, такси не помню, маркетплейс много» — тоже сойдёт.\n\n"
+            "Я поворчу и найду, куда утекает 🩷",
+        )
+        return LEAKS
 
 
 # ---------- расчёт ----------
@@ -184,6 +260,29 @@ async def get_months(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def get_leaks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not GIGACHAT_KEY:
+        await update.message.reply_text(
+            "ИИ-разбор пока не подключён 🙈 Загляни позже. А пока жми /start и посчитай бюджет."
+        )
+        return ConversationHandler.END
+    await update.message.reply_text("Так, секунду, разбираю твои траты... 👀")
+    try:
+        reply = await grumpy_analyze(update.message.text)
+    except Exception:
+        logging.exception("GigaChat error")
+        await update.message.reply_text(
+            "Упс, мой ворчливый мозг сейчас недоступен 😤 Попробуй ещё раз чуть позже."
+        )
+        return ConversationHandler.END
+    await update.message.reply_text(reply)
+    await update.message.reply_text(
+        "Хочешь ещё разбор или посчитать бюджет — жми /start 🩷 И подпишись на @iriskashe.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ConversationHandler.END
+
+
 async def send_excel(target, context: ContextTypes.DEFAULT_TYPE):
     chat = target.message.chat if hasattr(target, "message") else target.effective_chat
     if GSHEET_LINK:
@@ -229,12 +328,13 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(on_button, pattern="^(calc|excel)$")],
+        entry_points=[CallbackQueryHandler(on_button, pattern="^(calc|excel|leaks)$")],
         states={
             INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_income)],
             OBLIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_oblig)],
             VAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_var)],
             MONTHS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_months)],
+            LEAKS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_leaks)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
